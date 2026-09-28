@@ -9,9 +9,10 @@
 .github/workflows/build-ponwrt.yml     主构建流程（机型可选 / 释放空间 / 工具链缓冲）
 .github/workflows/cache-keepalive.yml  每 5 天 touch 缓存，防止被回收
 diy-part1.sh    拉取可选插件到 package/custom（passwall/openclash/mosdns/lucky/tailscale 等，默认全关）
-diy-part2.sh    把默认时区改成中国（Asia/Shanghai, CST-8）
+diy-part2.sh    默认值定制：① 时区改中国（Asia/Shanghai, CST-8）
+                ② 5G WiFi：国家码 CN / 信道 auto / 频宽 160MHz
 configs/        每机型一份精简 diffconfig（约 440 行，需 make defconfig 展开）
-files/          可选：自定义 rootfs 文件，会自动拷进源码
+files/          自定义 rootfs 文件，会自动拷进源码（sbin/tempinfo + 两个 uci-defaults））
 ```
 
 ## diy 脚本
@@ -20,133 +21,69 @@ files/          可选：自定义 rootfs 文件，会自动拷进源码
 
 ### diy-part1.sh —— 拉插件
 
-**默认开启（硬件状态监控两件套，config 里已 `=y`）**：
+**默认开启**：
 
 | 开关 | 包 | 作用 |
 |------|-----|------|
 | `ADD_AIROHA_NPU` | `luci-app-airoha-npu` | Airoha SoC 状态页：NPU 卸载 / CPU 频率与超频 / Frame Engine / PPE 流表 |
-| `ADD_TEMP_STATUS` | `luci-app-temp-status` | CPU + WiFi 芯片温度显示在「状态 → 概览」页 |
 
-另外 CI 仓库自带一个本地包（`packages/luci-app-pon-status`，不走 clone，由 diy-part1.sh 拷进
-`package/custom`）：把 **PON 光模块的温度、收光功率、发光功率** 显示在概览页。
+另外 CI 仓库自带两个本地包（`packages/`，不走 clone，由 diy-part1.sh 拷进 `package/custom`）：
+
+| 包 | 作用 |
+|-----|------|
+| `luci-app-pon-status` | PON 光模块卡片：**温度 / 收光 / 发光 / 偏置电流 / 供电电压**，表格形式显示在概览页「系统」下一格 |
+| `luci-app-natmode` | NAT 类型三选一：**全锥形 NAT1 / 受限型 NAT3 / 全对称型 NAT4**，菜单「网络 → NAT 类型」 |
 
 其余默认关闭：`ADD_PASSWALL` / `ADD_OPENCLASH` / `ADD_MOSDNS` / `ADD_LUCKY` /
 `ADD_TAILSCALE` / `ADD_OPENLIST` / `ADD_SMARTDNS`。
 
-⚠️ 两点：
-- 拉取目录名必须等于包名（`luci.mk: PKG_NAME ?= $(notdir ${CURDIR})`），
-  改目录名会导致 config 里的符号对不上。
-- 默认开启的两个若拉取失败，脚本会 `::error::` 退出——否则 `defconfig` 会静默剔除，
-  编出缺状态页的固件还不易察觉。要关就把开关和 config 里的 `=y` 一起改。
+### luci-app-airoha-npu 的源与中文
 
-两个插件的中文情况：`luci-app-temp-status` 带 `po/zh_Hans`，`LUCI_LANG_zh_Hans=y` 会自动选中
-其 `zh-cn` 包；`luci-app-airoha-npu` 的 po 只有 es，**界面为英文**（上游未提供中文模板）。
+**源仓库：`luanmuc/luci-app-airoha-npu`**（`rchen14b` 的 fork 改进版）：
 
+| | rchen14b（原版）| luanmuc（本仓库选用）|
+|---|---|---|
+| 中文翻译 | ❌ po/ 只有 es + templates | ✅ 自带 `po/zh_Hans`，48 条全翻 |
+| 仓库结构 | ⚠ 根目录 + 同名子目录各一份，feed 索引会中断 | ✅ 单层，正常 |
+| luci.mk 路径 | 需 feeds 在固定位置 | ✅ 已修 |
 
-启用两步：① 脚本里开关改 `true`；② `configs/<机型>.config` 第 19 段把对应
-`# CONFIG_PACKAGE_xxx is not set` 改成 `=y`。
+## 5G WiFi 默认值（国家码 CN / 信道 auto / 160MHz）
 
-### diy-part2.sh —— 时区改中国
+由 `diy-part2.sh` 第 4 段实现，落在
+`files/etc/uci-defaults/96-wifi-5g-cn`（**首启执行**）。
 
-- 改 `package/base-files/files/bin/config_generate`：`timezone='CST-8'`、`zonename='Asia/Shanghai'`
-- 写 `files/etc/uci-defaults/99-timezone-cn`，保留旧配置升级时也强制刷成中国时区
-- 往 `.config` 追加 `CONFIG_PACKAGE_zoneinfo-asia=y`（LuCI 时区显示与切换需要，基座默认关闭）
+### 默认值
 
-## configs 说明
+| 选项 | 值 |
+|---|---|
+| `country` | `CN`（中国） |
+| `country_ie` | `1`（beacon 中广播国家码） |
+| `channel` | `auto`（自动选信道 / ACS） |
+| `htmode` | `HE160`（160MHz，WiFi 6）；不支持则回落 `HE80` |
 
-每个机型一份 `configs/<profile>.config`，统一为**精简 diffconfig**（约 450 行），只写与 ponwrt 官方
-`configs/an7581.config` / `an7583.config` 基座的差异。
+编辑 `diy-part2.sh` 顶部的编译期常量（会被注入 uci-defaults 脚本）：
 
-⚠️ **流程采用「基座打底 + 差异追加」**：先 `cp` 源码自带的 `configs/<soc>.config` 作为 `.config`，
-再把机型精简配置 `cat >>` 追加（后写覆盖先写），最后 `make defconfig` 展开。
-
-这么做是必须的——不少符号是 tristate 且**无 default（默认 n）**，例如：
-- `CONFIG_LUCI_LANG_zh_Hans`（LuCI 中文总开关，默认 n → 不写就丢中文包）
-- `CONFIG_PACKAGE_TAR_*`、`CONFIG_PACKAGE_MAC80211_*`（tar / mac80211 特性开关）
-- `CONFIG_PACKAGE_kmod-mppe`、`CONFIG_PACKAGE_kmod-ovpn-backports`
-
-若直接把精简配置当 `.config` 展开，`defconfig` 会把这些重置成默认 n。先铺基座可保留全部非默认值。
-
-统一规则：
-
-- **NPU 每机型都开**：AN7581 → `airoha-en7581-npu-firmware=y`，AN7583 → `airoha-an7583-npu-firmware=y`，
-  配合 `kmod-nft-offload` + `kmod-nf-flow` 走 PPE 硬件转发（PON 与以太网共用 NPU）。
-- **全部走 ImmortalWrt 组件**：`dnsmasq-full`、`firewall4`、`nftables-json`、`autocore`、`shellsync`、
-  `luci-app-package-manager`、`apk-openssl`。网络栈只有 nftables（`kmod-nft-*` / `kmod-nf-*`），
-  不引入 iptables，也不引入 OpenWrt 官方 feed 的包；PON 相关全部来自 `pon_drivers` / `pon_userspace`。
-- **按 DTS 硬件逐机型裁剪**：光器件（FiberHome BOSA / EN7572 二选一）、PHY（GPY211 / EN8811H / RTL8261N）、
-  WiFi（仅 hg5585f-ct/cu 与 zn515 有 MT7916D）、USB（无口机型整段关闭）。
-- 可选插件（passwall / openclash / mosdns / lucky / tailscale / 主题）全部以注释形式放在第 19 段，
-  由 `diy-part3.sh` 拉取，默认关闭。
-
-段落顺序：
-```
-target/包管理 → DEVICES → PON 内核驱动 → PON 用户态 → PON/IPTV LuCI
-→ nftables 网络转发 → 隧道拨号 → LuCI → 基础服务 → 系统工具
-→ 固件工具 → 内核模块 → 基础库 → 内核选项
-→ 13 光器件 → 14 NPU 卸载 → 15 WiFi → 16 USB → 17 PHY → 18 TF-A → 19 可选插件 → 20 其他
+```bash
+WIFI_5G_COUNTRY="${WIFI_5G_COUNTRY:-CN}"
+WIFI_5G_CHANNEL="${WIFI_5G_CHANNEL:-auto}"
+WIFI_5G_HTMODE="${WIFI_5G_HTMODE:-HE160}"
+WIFI_5G_FALLBACK="${WIFI_5G_FALLBACK:-HE80}"
 ```
 
-| 机型 | SoC | 光器件 | 2.5G PHY | WiFi | USB | 校准数据 |
-|------|-----|--------|----------|------|-----|----------|
-| fiberhome_hg5382a | AN7581 | FiberHome BOSA (GN28L95/UX3363) | GPY211 | 无 | 无 | factory |
-| fiberhome_hg5585f-ct | AN7581 | FiberHome BOSA | GPY211 | MT7916D | USB0(3.0)+USB1(2.0) | factory |
-| fiberhome_hg5585f-cu | AN7581 | FiberHome BOSA | GPY211 | MT7916D | USB0(3.0)+USB1(2.0) | factory |
-| gemtek_xg2010g | AN7581 | EN7572 | EN8811H + 2×RTL8261N | 无 | 无 | dsd |
-| unionman_ung00a | AN7581 | EN7572 | EN8811H | 无 | 无 | reservearea |
-| nokia_xg-040g-md-ubi | AN7581 | EN7572 | EN8811H | 无 | USB0+USB1（5V 可控） | bosa, ri |
-| nokia_xg-040g-tf-ubi | AN7581 | EN7572 | EN8811H | 无 | USB0+USB1（无 5V 控制） | bosa, ri |
-| znxt_zn504xg-d | AN7581 | EN7572 | EN8811H + 3×GE | 无 | USB1 | reservearea |
-| znxt_zn515xg-d | AN7581 | EN7572 | EN8811H + 3×GE | MT7916D | USB1+USB2 | reservearea |
-| nokia_xg-040g-mf | AN7583 | EN7572 | EN8811H | 无 | USB0 | bosa, ri |
-| nokia_xg-040g-mf-ubi | AN7583 | EN7572 | EN8811H | 无 | USB0 | bosa, ri |
+也支持 workflow 层通过环境变量覆盖。
 
-加减插件：把 `# CONFIG_PACKAGE_x is not set` 改成 `CONFIG_PACKAGE_x=y` 即开启，反向即关闭。
+### 注意事项
 
-## 用法
+- **DFS**：CN 法规下 160MHz 需要信道 36–64，其中 52–64 属 DFS 信道。
+  ACS 若选中，启动时会先做雷达检测（CAC），**WiFi 可能延迟 1–10 分钟才出现**
+  或自动跳频。这是正常现象，不是故障。
 
-1. Fork 本仓库，Settings → Actions 打开 Workflow 权限（Read and write）。
-2. Actions → `Build PonWrt (Airoha AN758x PON)` → Run workflow，选参数：
+## PON 光模块卡片（概览页系统下一格）
 
-| 参数 | 说明 |
-|------|------|
-| `branch` | ponwrt 源码分支，默认 `master` |
-| `soc` | `an7581` / `an7583`，选 `all` 机型时生效，其他情况按机型自动校正 |
-| `profile` | 机型，默认 `fiberhome_hg5585f-cu`；`all` = 该 SoC 下全机型编译（见下） |
-| `scope` | `firmware` 出固件；`toolchain-only` 只编译并缓存工具链 |
-| `ignore_cache` | `true` 时忽略缓存强制重编工具链 |
-| `upload_release` | `true` 把固件发到 Release（默认开）；`false` 只传 Artifact |
-| `ssh` | `true` 进入 tmate 调试 |
+`packages/luci-app-pon-status`（本地包，非第三方 clone）在概览页新增
+「PON 光模块」卡片，位置为**「系统」卡片的下一格**。
 
-3. 产物：
-   - Artifact：`OpenWrt_firmware_ponwrt-<soc>-<profile>_<时间>`（无论 `upload_release` 开关都会传）
-   - Release：tag `ponwrt-<soc>-<profile>-<branch>-<时间戳>`，含固件 + sha256 校验 + 机型/校准数据说明
-
-## profile=all 的行为
-
-选 `all` 时**不裁剪机型**，保留源码基座里已选中的全部机型一次性编译：
-
-| SoC | 机型数 | profile |
-|-----|-------|---------|
-| an7581 | 9 | hg5382a、hg5585f-ct、hg5585f-cu、gemtek_xg2010g、unionman_ung00a、nokia_xg-040g-md-ubi、nokia_xg-040g-tf-ubi、znxt_zn504xg-d、znxt_zn515xg-d |
-| an7583 | 2 | nokia_xg-040g-mf、nokia_xg-040g-mf-ubi |
-
-用的是 `configs/an7581.config` / `configs/an7583.config`（SoC 通用配置）。
-
-机制上是 `CONFIG_TARGET_MULTI_PROFILE=y` + `CONFIG_TARGET_PER_DEVICE_ROOTFS=y`：
-**工具链和内核只编一次，但每个机型各出一份 rootfs + 镜像**。所以不是 9 倍耗时，
-约单机型的 3~5 倍。
-
-⚠️ 两点注意：
-- 全机型无法按硬件裁剪，光器件（BOSA + EN7572）、三种 PHY、WiFi、USB 全部开启。
-  各机型启动时由 DTS 匹配自己需要的驱动，多余模块不会被加载。
-- 免费 runner 上限 6h，全机型大概率超时。要用就先跑 `scope=toolchain-only`
-  建好缓存，并把 workflow 的 `timeout-minutes` 调大。
-
-## PON 光模块状态上概览页
-
-`packages/luci-app-pon-status`（本地包，非第三方 clone）在「状态 → 概览」新增一个
-「PON 光模块」卡片，显示：
+### 显示内容
 
 | 字段 | 来源字段 | 单位 |
 |------|---------|------|
@@ -156,34 +93,26 @@ target/包管理 → DEVICES → PON 内核驱动 → PON 用户态 → PON/IPTV
 | 偏置电流 | `tx_bias_ma` | mA |
 | 供电电压 | `voltage_volts` | V |
 
-### 数据链路
+### 开关：SHOW_PON_OPTICS
 
+`tempinfo` 顶部有一个开关：
+
+```sh
+SHOW_PON_OPTICS=1    # 温度行附带 PON 光功率/电流/电压
+SHOW_PON_OPTICS=0    # 只显示温度（CPU / WiFi / PON）
 ```
-概览页 include(70_pon.js)
-  → rpcd file.exec（ACL: luci-app-pon-status）
-  → ponctl --device <dev> status --json
-  → airoha-ponctl 的 convert_optics() 已把 SFF-8472 原始值换算成显示单位
-```
 
-换算规则（`airoha-ponctl/src/src/status.rs`）：
+设为 `0` 时输出：`CPU: 58.7°C, WiFi: 46.0°C 48.0°C, PON: 48.5°C`
 
-| 原始字段 | 换算 | 输出字段 |
-|---------|------|---------|
-| `temperature_8472` | ÷ 256 | `temperature_celsius`（°C）|
-| `voltage_8472` | × 1e-4 | `voltage_volts`（V）|
-| `tx_bias_8472` | × 0.002 | `tx_bias_ma`（mA）|
-| `tx_power_8472` | 10·log10(v) − 40 | `tx_power_dbm`（dBm）|
-| `rx_power_8472` | 10·log10(v) − 40 | `rx_power_dbm`（dBm）|
+本仓库**默认设为 `0`**，因为 `luci-app-pon-status` 卡片已用表格形式完整展示
+收发光/电流/电压，两者会重复。若你想只要一行、不装 pon-status 卡片，改回 `1` 即可。
 
-### 实现要点
+### 一点开销说明
 
-- 概览页扩展机制：`luci-mod-status` 的 `index.js` 会 `fs.list('/www/luci-static/resources/view/status/include')`，
-  按文件名排序后 `L.require()` 每个 `.js`。模块用 `baseclass.extend({ title, load, render })` 导出。
-  文件名 `70_pon.js` 决定它排在 `60_wifi.js` 之后。
-- 设备名从 UCI `pon` 配置的 `xpon` 段 `device` 项读取，和 `luci-app-pon` 的 status.js 一致。
-- 无 PON 设备或读取失败时 `render` 返回 `null`，卡片自动隐藏（`load` 里 `Promise.reject()`）。
-- 自带 rpcd ACL（`luci-app-pon-status` 组），授权 `ponctl --device * status --json` 的 exec。
-  与 `luci-app-pon` 用不同组名，避免 acl.d 同名覆盖。
+概览页轮询间隔 3 秒，故 `tempinfo` 每 3 秒执行一次 `ponctl`。
+`ponctl` 是 Rust 二进制、只读 sysfs，开销可忽略。
+但注意 `luci-app-pon-status` 卡片同样每 3 秒调一次 `ponctl`，
+两者叠加即约每 1.5 秒一次 `ponctl` 调用 —— 若在意，把 `SHOW_PON_OPTICS` 设 `0` 即可减半。
 
 ## Release 行为
 
@@ -210,7 +139,67 @@ target/包管理 → DEVICES → PON 内核驱动 → PON 用户态 → PON/IPTV
 - 命中顺序：`actions/cache` → 仓库 `toolchain-cache` Release 备份 → 本地编译。
 - Release 命中后会回写 `actions/cache`，下次构建走快通道。
 - 命中缓存时用 `sed -i 's/ $(tool.*\/stamp-compile)//' Makefile` 跳过工具链重编。
+  （对 ponwrt 根 Makefile 确实命中第 46 / 47 / 130 行，去掉 `$(tools/stamp-compile)`、
+  `$(toolchain/stamp-compile)` 依赖。）
 - 额外缓存：`.ccache`（编译缓存）、`dl`（软件包下载目录）。
+
+### 缓存 key 的滚动周期
+
+`dl` 与 `ccache` 的 key 都用**年+周号**（`$(date +%Y%W)`，如 `202639`），由
+`Resolve device profile` 步骤的 `week` output 提供。
+
+| 缓存 | key |
+|------|-----|
+| dl | `ponwrt-dl-<branch>-<week>` |
+| ccache | `ponwrt-ccache-<soc>-<week>` |
+
+原因是这两个缓存**体积大且会每次 save**：
+
+- 若用 `github.run_id` / `github.run_number`，每次运行都会生成一份新副本，
+  10GB 配额很快被刷满，并淘汰掉真正有用的旧缓存；
+- 改成周号后，同一周内多次运行复用同一条目，`restore-keys` 仍能跨周命中。
+
+### ccache：默认关闭，按需开启
+
+ccache 默认**关闭**（`USE_CCACHE: false`，config 里也不写 `CONFIG_CCACHE`）。
+原因是一个真实的缓存一致性陷阱：
+
+`tools/Makefile`：
+
+```makefile
+ifneq ($(CONFIG_CCACHE)$(CONFIG_SDK),)
+  tools-y += ccache xxhash
+endif
+```
+
+即 **ccache 二进制只在 `CONFIG_CCACHE` 生效时才由 `make tools/install` 编入**
+`staging_dir/host/bin`。而 `rules.mk`：
+
+```makefile
+ifneq ($(CONFIG_CCACHE),)
+  TARGET_CC:= ccache $(TARGET_CC)
+  export CCACHE_DIR:=$(TOPDIR)/.ccache
+endif
+```
+
+于是出现这种失败：
+
+| 时序 | 结果 |
+|------|------|
+| 工具链缓存是**未开 ccache** 时建立的 | 缓存里没有 `staging_dir/host/bin/ccache` |
+| 之后开启 `CONFIG_CCACHE=y` + 缓存命中 | `make tools/install` 被跳过 → ccache 没被补装 |
+| 编译任何包 | `/bin/sh: 1: .../staging_dir/host/bin/ccache: not found`（**Error 127**）|
+
+要开启 ccache，**只改一处**：workflow 的 `USE_CCACHE: true`。
+流程里「Setup ccache (opt-in)」步骤会：
+
+1. 自动往 `.config` 追加 `CONFIG_CCACHE=y` 并 `make defconfig`；
+2. 检测 `staging_dir/host/bin/ccache`，缺失就 `make tools/ccache/install` 补装
+   （ccache 依赖 `xxhash` → `cmake`，首次会多花几分钟）；
+3. 补装失败则自动把 `CONFIG_CCACHE` 改回 `is not set` 并继续编译 ——
+   **绝不会因为 ccache 让整次构建失败**。
+
+> 提醒：开启后 `.ccache` 会额外占用磁盘，注意 runner 剩余空间。
 
 ## 首次使用建议
 
@@ -220,8 +209,3 @@ target/包管理 → DEVICES → PON 内核驱动 → PON 用户态 → PON/IPTV
 2. 再跑一次 `scope = firmware` 出固件；
 3. 若仍超时，把 `configs/*.config` 里不需要的 luci-app / 语言包删掉再提交。
 
-## 注意事项
-
-- 刷机前用 [AN758x-Stock2UBI](https://github.com/pbs05) 备份原厂 flash；烽火 `factory` 备份需先过 `FiberHome Factory` 转换。
-- 刷完后通过 U-Boot Web 或 LuCI → 网络 → PON → Configuration → PON board data 恢复校准/身份数据，否则 WiFi 与 PON  Registration 异常。
-- `toolchain-cache` Release 由流程自动维护，`Remove old releases` 用 `delete_tag_pattern: ^<DEVICE_NAME>-` 限定，不会误删。
