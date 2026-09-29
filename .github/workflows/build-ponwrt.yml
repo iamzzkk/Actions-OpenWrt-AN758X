@@ -1000,12 +1000,12 @@ jobs:
         retain_days: 7
         keep_minimum_runs: 10
 
-    - name: Remove old releases
-      uses: dev-drprasad/delete-older-releases@v0.3.4
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 10
-        delete_tags: true
-        delete_tag_pattern: '^${{ env.DEVICE_NAME }}-'
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+   # - name: Remove old releases
+   #   uses: dev-drprasad/delete-older-releases@v0.3.4
+   #   if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+   #   with:
+   #     keep_latest: 10
+   #     delete_tags: true
+   #     delete_tag_pattern: '^${{ env.DEVICE_NAME }}-'
+   #   env:
+   #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
